@@ -1,0 +1,100 @@
+name: Build and Push Mikrotik Exporter
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: '0 0 14 * *' # Monthly on the 14th
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/mikrotik-exporter
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      # 1. Checkout the current repository (where the Dockerfile is)
+      - name: Checkout current repo
+        uses: actions/checkout@v4
+
+      # 2. Checkout the source repository into src/
+      # For the "Latest Tag" workflow, change 'ref' to: 
+      # ref: $(git describe --tags $(git rev-list --tags --max-count=1))
+      - name: Checkout mikrotik-exporter
+        uses: actions/checkout@v4
+        with:
+          repository: nshttpd/mikrotik-exporter
+          path: src
+          fetch-depth: 0
+
+      # 3. Extract Metadata (Go version, Version file, SHAs, Date)
+      - name: Gather metadata
+        id: meta
+        run: |
+          # Get Go version from go.mod
+          GO_VER=$(grep -E '^go [0-9.]+' src/go.mod | awk '{print $2}')
+          echo "GO_VERSION=$GO_VER" >> $GITHUB_ENV
+          
+          # Get app version and short SHA
+          VERSION=$(cat src/VERSION)
+          cd src
+          SHORTSHA=$(git rev-parse --short HEAD)
+          cd ..
+          
+          # Date for tagging
+          ISODATE=$(date +'%Y-%m-%d')
+          
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "SHORTSHA=$SHORTSHA" >> $GITHUB_ENV
+          echo "ISODATE=$ISODATE" >> $GITHUB_ENV
+
+      # 4. Install Target Go Version
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # 5. Build Binaries for Linux AMD64 and ARM64
+      - name: Build Binaries
+        run: |
+          mkdir -p src/dist
+          
+          # Build parameters
+          LDFLAGS="-X main.appVersion=${{ env.VERSION }} -X main.shortSha=${{ env.SHORTSHA }}"
+          
+          # Build AMD64
+          GOOS=linux GOARCH=amd64 go build -C src -ldflags "$LDFLAGS" -o dist/mikrotik-exporter_linux_amd64
+          
+          # Build ARM64
+          GOOS=linux GOARCH=arm64 go build -C src -ldflags "$LDFLAGS" -o dist/mikrotik-exporter_linux_arm64
+
+      # 6. Set up Docker Buildx (Required for multi-arch)
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 7. Login to GHCR
+      - name: Log into registry ${{ env.REGISTRY }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 8. Build and Push Multi-arch Image
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}-${{ env.SHORTSHA }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}-${{ env.SHORTSHA }}-${{ env.ISODATE }}
