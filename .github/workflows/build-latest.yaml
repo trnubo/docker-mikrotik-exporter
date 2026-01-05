@@ -1,0 +1,93 @@
+name: Build and Push - Latest Tag
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 14 * *' # Monthly
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/mikrotik-exporter
+
+jobs:
+  build-latest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout current repo
+        uses: actions/checkout@v4
+
+      # 1. Dynamically fetch the latest tag name from the upstream repo
+      - name: Get latest tag
+        id: get-tag
+        run: |
+          LATEST_TAG=$(gh api repos/nshttpd/mikrotik-exporter/releases/latest --jq '.tag_name' || \
+                       gh api repos/nshttpd/mikrotik-exporter/tags --jq '.[0].name')
+          echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # 2. Checkout the specific tag
+      - name: Checkout mikrotik-exporter at ${{ steps.get-tag.outputs.tag }}
+        uses: actions/checkout@v4
+        with:
+          repository: nshttpd/mikrotik-exporter
+          path: src
+          ref: ${{ steps.get-tag.outputs.tag }}
+          fetch-depth: 1
+
+      - name: Gather metadata
+        id: meta
+        run: |
+          GO_VER=$(grep -E '^go [0-9.]+' src/go.mod | awk '{print $2}')
+          VERSION=$(cat src/VERSION)
+          cd src
+          SHORTSHA=$(git rev-parse --short HEAD)
+          cd ..
+          ISODATE=$(date +'%Y-%m-%d')
+          
+          echo "GO_VERSION=$GO_VER" >> $GITHUB_ENV
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "SHORTSHA=$SHORTSHA" >> $GITHUB_ENV
+          echo "ISODATE=$ISODATE" >> $GITHUB_ENV
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # 3. Build Static Binaries (CGO_ENABLED=0)
+      - name: Build Binaries
+        run: |
+          mkdir -p src/dist
+          LDFLAGS="-X main.appVersion=${{ env.VERSION }} -X main.shortSha=${{ env.SHORTSHA }}"
+          
+          # Build AMD64
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -C src -ldflags "$LDFLAGS" -o dist/mikrotik-exporter_linux_amd64
+          
+          # Build ARM64
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -C src -ldflags "$LDFLAGS" -o dist/mikrotik-exporter_linux_arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log into registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}-${{ env.SHORTSHA }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}-${{ env.SHORTSHA }}-${{ env.ISODATE }}
