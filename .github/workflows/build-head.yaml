@@ -70,10 +70,10 @@ jobs:
           LDFLAGS="-X main.appVersion=${{ env.VERSION }} -X main.shortSha=${{ env.SHORTSHA }}"
           
           # Build AMD64
-          GOOS=linux GOARCH=amd64 go build -C src -ldflags "$LDFLAGS" -o dist/mikrotik-exporter_linux_amd64
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -C src -ldflags "$LDFLAGS" -o dist/mikrotik-exporter_linux_amd64
           
           # Build ARM64
-          GOOS=linux GOARCH=arm64 go build -C src -ldflags "$LDFLAGS" -o dist/mikrotik-exporter_linux_arm64
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -C src -ldflags "$LDFLAGS" -o dist/mikrotik-exporter_linux_arm64
 
       # 6. Set up Docker Buildx (Required for multi-arch)
       - name: Set up Docker Buildx
